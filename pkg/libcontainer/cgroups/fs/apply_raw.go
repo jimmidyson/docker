@@ -36,7 +36,13 @@ type data struct {
 	pid    int
 }
 
-func Apply(c *cgroups.Cgroup, pid int) (cgroups.ActiveCgroup, error) {
+type manager struct {}
+
+func NewManager() *manager {
+  return &manager{}
+}
+
+func (m *manager) Apply(c *cgroups.Cgroup, pid int) (cgroups.ActiveCgroup, error) {
 	d, err := getCgroupData(c, pid)
 	if err != nil {
 		return nil, err
@@ -52,7 +58,7 @@ func Apply(c *cgroups.Cgroup, pid int) (cgroups.ActiveCgroup, error) {
 	return d, nil
 }
 
-func GetStats(c *cgroups.Cgroup) (*cgroups.Stats, error) {
+func (m *manager) GetStats(c *cgroups.Cgroup) (*cgroups.Stats, error) {
 	stats := cgroups.NewStats()
 
 	d, err := getCgroupData(c, 0)
@@ -71,7 +77,7 @@ func GetStats(c *cgroups.Cgroup) (*cgroups.Stats, error) {
 
 // Freeze toggles the container's freezer cgroup depending on the state
 // provided
-func Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
+func (m *manager) Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
 	d, err := getCgroupData(c, 0)
 	if err != nil {
 		return err
@@ -84,7 +90,7 @@ func Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
 	return freezer.Set(d)
 }
 
-func GetPids(c *cgroups.Cgroup) ([]int, error) {
+func (m *manager) GetPids(c *cgroups.Cgroup) ([]int, error) {
 	d, err := getCgroupData(c, 0)
 	if err != nil {
 		return nil, err

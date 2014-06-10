@@ -27,6 +27,7 @@ import (
 	"github.com/dotcloud/docker/image"
 	"github.com/dotcloud/docker/pkg/graphdb"
 	"github.com/dotcloud/docker/pkg/label"
+	"github.com/dotcloud/docker/pkg/libcontainer/cgroups"
 	"github.com/dotcloud/docker/pkg/namesgenerator"
 	"github.com/dotcloud/docker/pkg/networkfs/resolvconf"
 	"github.com/dotcloud/docker/pkg/selinux"
@@ -1019,6 +1020,10 @@ func (daemon *Daemon) Unpause(c *Container) error {
 
 func (daemon *Daemon) Kill(c *Container, sig int) error {
 	return daemon.execDriver.Kill(c.command, sig)
+}
+
+func (daemon *Daemon) Stats(c *Container) (*cgroups.Stats, error) {
+	return daemon.execDriver.Stats(c.command)
 }
 
 // Nuke kills all containers then removes all content

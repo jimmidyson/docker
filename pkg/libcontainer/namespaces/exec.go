@@ -9,8 +9,7 @@ import (
 
 	"github.com/dotcloud/docker/pkg/libcontainer"
 	"github.com/dotcloud/docker/pkg/libcontainer/cgroups"
-	"github.com/dotcloud/docker/pkg/libcontainer/cgroups/fs"
-	"github.com/dotcloud/docker/pkg/libcontainer/cgroups/systemd"
+	"github.com/dotcloud/docker/pkg/libcontainer/cgroups/cgroupmanagers"
 	"github.com/dotcloud/docker/pkg/libcontainer/network"
 	"github.com/dotcloud/docker/pkg/system"
 )
@@ -138,10 +137,7 @@ func DefaultCreateCommand(container *libcontainer.Container, console, rootfs, da
 func SetupCgroups(container *libcontainer.Container, nspid int) (cgroups.ActiveCgroup, error) {
 	if container.Cgroups != nil {
 		c := container.Cgroups
-		if systemd.UseSystemd() {
-			return systemd.Apply(c, nspid)
-		}
-		return fs.Apply(c, nspid)
+    return cgroupmanagers.NewManager().Apply(c, nspid)
 	}
 	return nil, nil
 }

@@ -1,5 +1,14 @@
 package cgroups
 
+import (
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
 type ThrottlingData struct {
 	// Number of periods with throttling active
 	Periods uint64 `json:"periods,omitempty"`
@@ -48,7 +57,7 @@ type BlkioStatEntry struct {
 type BlkioStats struct {
 	// number of bytes tranferred to and from the block device
 	IoServiceBytesRecursive []BlkioStatEntry `json:"io_service_bytes_recursive,omitempty"`
-	IoServicedRecursive     []BlkioStatEntry `json:"io_serviced_recusrive,omitempty"`
+	IoServicedRecursive     []BlkioStatEntry `json:"io_serviced_recursive,omitempty"`
 	IoQueuedRecursive       []BlkioStatEntry `json:"io_queue_recursive,omitempty"`
 	SectorsRecursive        []BlkioStatEntry `json:"sectors_recursive,omitempty"`
 }
@@ -69,4 +78,34 @@ type Stats struct {
 func NewStats() *Stats {
 	memoryStats := MemoryStats{Stats: make(map[string]uint64)}
 	return &Stats{MemoryStats: memoryStats}
+}
+
+var (
+	ErrNotSupportStat = errors.New("stats are not supported for subsystem")
+	ErrNotValidFormat = errors.New("line is not a valid key value format")
+)
+
+// Parses a cgroup param and returns as name, value
+//  i.e. "io_service_bytes 1234" will return as io_service_bytes, 1234
+func GetCgroupParamKeyValue(t string) (string, uint64, error) {
+	parts := strings.Fields(t)
+	switch len(parts) {
+	case 2:
+		value, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			return "", 0, fmt.Errorf("Unable to convert param value to uint64: %s", err)
+		}
+		return parts[0], value, nil
+	default:
+		return "", 0, ErrNotValidFormat
+	}
+}
+
+// Gets a single int64 value from the specified cgroup file.
+func GetCgroupParamInt(cgroupPath, cgroupFile string) (uint64, error) {
+	contents, err := ioutil.ReadFile(filepath.Join(cgroupPath, cgroupFile))
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(contents)), 10, 64)
 }

@@ -1,12 +1,7 @@
 package fs
 
 import (
-	"bufio"
-	"fmt"
-	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/dotcloud/docker/pkg/libcontainer/cgroups"
 )
@@ -57,59 +52,6 @@ examples:
     Total 0
 */
 
-func splitBlkioStatLine(r rune) bool {
-	return r == ' ' || r == ':'
-}
-
-func getBlkioStat(path string) ([]cgroups.BlkioStatEntry, error) {
-	var blkioStats []cgroups.BlkioStatEntry
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		// format: dev type amount
-		fields := strings.FieldsFunc(sc.Text(), splitBlkioStatLine)
-		if len(fields) < 3 {
-			if len(fields) == 2 && fields[0] == "Total" {
-				// skip total line
-				continue
-			} else {
-				return nil, fmt.Errorf("Invalid line found while parsing %s: %s", path, sc.Text())
-			}
-		}
-
-		v, err := strconv.ParseUint(fields[0], 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		major := v
-
-		v, err = strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		minor := v
-
-		op := ""
-		valueField := 2
-		if len(fields) == 4 {
-			op = fields[2]
-			valueField = 3
-		}
-		v, err = strconv.ParseUint(fields[valueField], 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		blkioStats = append(blkioStats, cgroups.BlkioStatEntry{Major: major, Minor: minor, Op: op, Value: v})
-	}
-
-	return blkioStats, nil
-}
-
 func (s *blkioGroup) GetStats(d *data, stats *cgroups.Stats) error {
 	var blkioStats []cgroups.BlkioStatEntry
 	var err error
@@ -118,23 +60,23 @@ func (s *blkioGroup) GetStats(d *data, stats *cgroups.Stats) error {
 		return err
 	}
 
-	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.sectors_recursive")); err != nil {
-		return err
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.sectors_recursive")); err != nil {
+    return err
 	}
 	stats.BlkioStats.SectorsRecursive = blkioStats
 
-	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_service_bytes_recursive")); err != nil {
-		return err
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.io_service_bytes_recursive")); err != nil {
+    return err
 	}
 	stats.BlkioStats.IoServiceBytesRecursive = blkioStats
 
-	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_serviced_recursive")); err != nil {
-		return err
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.io_serviced_recursive")); err != nil {
+    return err
 	}
 	stats.BlkioStats.IoServicedRecursive = blkioStats
 
-	if blkioStats, err = getBlkioStat(filepath.Join(path, "blkio.io_queued_recursive")); err != nil {
-		return err
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.io_queued_recursive")); err != nil {
+    return err
 	}
 	stats.BlkioStats.IoQueuedRecursive = blkioStats
 

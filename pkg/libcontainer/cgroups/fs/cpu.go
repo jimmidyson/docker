@@ -58,21 +58,9 @@ func (s *cpuGroup) GetStats(d *data, stats *cgroups.Stats) error {
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		t, v, err := getCgroupParamKeyValue(sc.Text())
-		if err != nil {
-			return err
-		}
-		switch t {
-		case "nr_periods":
-			stats.CpuStats.ThrottlingData.Periods = v
+  if err := cgroups.GetCpuStats(sc, stats); err != nil {
+    return err
+  }
 
-		case "nr_throttled":
-			stats.CpuStats.ThrottlingData.ThrottledPeriods = v
-
-		case "throttled_time":
-			stats.CpuStats.ThrottlingData.ThrottledTime = v
-		}
-	}
-	return nil
+  return nil
 }

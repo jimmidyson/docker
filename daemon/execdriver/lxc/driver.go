@@ -1,6 +1,8 @@
 package lxc
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -24,6 +26,13 @@ import (
 )
 
 const DriverName = "lxc"
+
+const nanosecondsInSecond = 1000000000
+
+var (
+	cpuCount   = uint64(runtime.NumCPU())
+	clockTicks = uint64(system.GetClockTicks())
+)
 
 func init() {
 	execdriver.RegisterInitFunc(DriverName, func(args *execdriver.InitArgs) error {
@@ -258,7 +267,7 @@ func (d *driver) version() string {
 		output, err = exec.Command("lxc-start", "--version").CombinedOutput()
 	}
 	if err == nil {
-		version = strings.TrimSpace(string(output))
+		version = strings.TrimSpace(strings.Trim(string(output), "\n"))
 		if parts := strings.SplitN(version, ":", 2); len(parts) == 2 {
 			version = strings.TrimSpace(parts[1])
 		}
@@ -303,7 +312,7 @@ func (d *driver) waitForStart(c *execdriver.Command, waitLock chan struct{}) (in
 
 		output, err = d.getInfo(c.ID)
 		if err == nil {
-			info, err := parseLxcInfo(string(output))
+			info, err := parseLxcInfo(strings.Trim(string(output), "\n"))
 			if err != nil {
 				return -1, err
 			}
@@ -333,7 +342,7 @@ func (i *info) IsRunning() bool {
 		utils.Errorf("Error getting info for lxc container %s: %s (%s)", i.ID, err, output)
 		return false
 	}
-	if strings.Contains(string(output), "RUNNING") {
+	if strings.Contains(strings.Trim(string(output), "\n"), "RUNNING") {
 		running = true
 	}
 	return running
@@ -371,7 +380,7 @@ func (d *driver) GetPidsForContainer(id string) ([]int, error) {
 	if err != nil {
 		return pids, err
 	}
-	for _, p := range strings.Split(string(output), "\n") {
+	for _, p := range strings.Split(strings.Trim(string(output), "\n"), "\n") {
 		if len(p) == 0 {
 			continue
 		}
@@ -460,4 +469,226 @@ func (d *driver) generateEnvConfig(c *execdriver.Command) error {
 	c.Mounts = append(c.Mounts, execdriver.Mount{p, "/.dockerenv", false, true})
 
 	return ioutil.WriteFile(p, data, 0600)
+}
+
+func (d *driver) Stats(c *execdriver.Command) (*cgroups.Stats, error) {
+	_, err := exec.LookPath("lxc-cgroup")
+
+	if err != nil {
+		return nil, err
+  }
+
+  stats := cgroups.NewStats()
+
+  err = getCpuStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getCpuAcctStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getMemoryStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getBlkioStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  return stats, nil
+}
+
+func getCpuStats(c *execdriver.Command, stats *cgroups.Stats) error {
+	output, errExec := exec.Command("lxc-cgroup", "-n", c.ID, "cpu.stat").CombinedOutput()
+	if errExec != nil {
+    return fmt.Errorf("Err: %s Output: %s", errExec, output)
+	}
+
+	sc := bufio.NewScanner(bytes.NewReader(output))
+	for sc.Scan() {
+		t, v, err := cgroups.GetCgroupParamKeyValue(sc.Text())
+		if err != nil {
+			return err
+		}
+		switch t {
+		case "nr_periods":
+			stats.CpuStats.ThrottlingData.Periods = v
+
+		case "nr_throttled":
+			stats.CpuStats.ThrottlingData.ThrottledPeriods = v
+
+		case "throttled_time":
+			stats.CpuStats.ThrottlingData.ThrottledTime = v
+		}
+	}
+
+  return nil
+}
+
+func getCpuAcctStats(c *execdriver.Command, stats *cgroups.Stats) error {
+	var (
+		startCpu, lastCpu, startSystem, lastSystem, startUsage, lastUsage, kernelModeUsage, userModeUsage, percentage uint64
+    err error
+    output []byte
+	)
+
+	output, err = exec.Command("lxc-cgroup", "-n", c.ID, "cpuacct.stat").CombinedOutput()
+	if err != nil {
+    return fmt.Errorf("Err: %s Output: %s", err, output)
+	}
+	if kernelModeUsage, userModeUsage, err = cgroups.GetCpuUsage(strings.Trim(string(output), "\n")); err != nil {
+		return err
+	}
+	startCpu = kernelModeUsage + userModeUsage
+	if startSystem, err = cgroups.GetSystemCpuUsage(); err != nil {
+		return err
+	}
+	startUsageTime := time.Now()
+	output, err = exec.Command("lxc-cgroup", "-n", c.ID, "cpuacct.usage").CombinedOutput()
+	if err != nil {
+    return fmt.Errorf("Err: %s Output: %s", err, output)
+	}
+	if startUsage, err = strconv.ParseUint(strings.Trim(string(output), "\n"), 10, 64); err != nil {
+		return err
+	}
+
+	// sample for 100ms
+	time.Sleep(100 * time.Millisecond)
+
+	output, err = exec.Command("lxc-cgroup", "-n", c.ID, "cpuacct.stat").CombinedOutput()
+	if err != nil {
+    return fmt.Errorf("Err: %s Output: %s", err, output)
+	}
+	if kernelModeUsage, userModeUsage, err = cgroups.GetCpuUsage(strings.Trim(string(output), "\n")); err != nil {
+		return err
+	}
+	lastCpu = kernelModeUsage + userModeUsage
+	if lastSystem, err = cgroups.GetSystemCpuUsage(); err != nil {
+		return err
+	}
+	usageSampleDuration := time.Since(startUsageTime)
+	output, err = exec.Command("lxc-cgroup", "-n", c.ID, "cpuacct.usage").CombinedOutput()
+	if err != nil {
+    return fmt.Errorf("Err: %s Output: %s", err, output)
+	}
+	if lastUsage, err = strconv.ParseUint(strings.Trim(string(output), "\n"), 10, 64); err != nil {
+		return err
+	}
+
+	var (
+		deltaProc   = lastCpu - startCpu
+		deltaSystem = lastSystem - startSystem
+		deltaUsage  = lastUsage - startUsage
+	)
+	if deltaSystem > 0.0 {
+		percentage = ((deltaProc / deltaSystem) * clockTicks) * cpuCount
+	}
+	// NOTE: a percentage over 100% is valid for POSIX because that means the
+	// processes is using multiple cores
+	stats.CpuStats.CpuUsage.PercentUsage = percentage
+	// Delta usage is in nanoseconds of CPU time so get the usage (in cores) over the sample time.
+	stats.CpuStats.CpuUsage.CurrentUsage = deltaUsage / uint64(usageSampleDuration.Nanoseconds())
+	output, err = exec.Command("lxc-cgroup", "-n", c.ID, "cpuacct.usage_percpu").CombinedOutput()
+	if err != nil {
+    return fmt.Errorf("Err: %s Output: %s", err, output)
+	}
+	percpuUsage, err := cgroups.GetPercpuUsage(strings.Trim(string(output), "\n"))
+	if err != nil {
+		return err
+	}
+	stats.CpuStats.CpuUsage.PercpuUsage = percpuUsage
+	stats.CpuStats.CpuUsage.UsageInKernelmode = (kernelModeUsage * nanosecondsInSecond) / clockTicks
+	stats.CpuStats.CpuUsage.UsageInUsermode = (userModeUsage * nanosecondsInSecond) / clockTicks
+	return nil
+}
+
+func getMemoryStats(c *execdriver.Command, stats *cgroups.Stats) error {
+  var value uint64
+  var err error
+	output, errExec := exec.Command("lxc-cgroup", "-n", c.ID, "memory.failcnt").CombinedOutput()
+	if errExec != nil {
+    return fmt.Errorf("Err: %s Output: %s", errExec, output)
+	}
+  if value, err = strconv.ParseUint(strings.Trim(string(output), "\n"), 10, 64); err != nil {
+		return err
+	}
+	stats.MemoryStats.Failcnt = value
+
+	output, errExec = exec.Command("lxc-cgroup", "-n", c.ID, "memory.max_usage_in_bytes").CombinedOutput()
+	if errExec != nil {
+    return fmt.Errorf("Err: %s Output: %s", errExec, output)
+	}
+  if value, err = strconv.ParseUint(strings.Trim(string(output), "\n"), 10, 64); err != nil {
+		return err
+	}
+	stats.MemoryStats.MaxUsage = value
+
+	output, errExec = exec.Command("lxc-cgroup", "-n", c.ID, "memory.usage_in_bytes").CombinedOutput()
+	if errExec != nil {
+    return fmt.Errorf("Err: %s Output: %s", errExec, output)
+	}
+  if value, err = strconv.ParseUint(strings.Trim(string(output), "\n"), 10, 64); err != nil {
+		return err
+	}
+	stats.MemoryStats.Usage = value
+
+	output, errExec = exec.Command("lxc-cgroup", "-n", c.ID, "memory.stat").CombinedOutput()
+	sc := bufio.NewScanner(bytes.NewReader(output))
+	for sc.Scan() {
+		t, v, err := cgroups.GetCgroupParamKeyValue(sc.Text())
+		if err != nil {
+			return err
+		}
+		stats.MemoryStats.Stats[t] = v
+	}
+
+  return nil
+}
+
+func getBlkioStats(c *execdriver.Command, stats *cgroups.Stats) error {
+	var blkioStats []cgroups.BlkioStatEntry
+	var err error
+
+	output, errExec := exec.Command("lxc-cgroup", "-n", c.ID, "blkio.sectors_recursive").CombinedOutput()
+	if errExec == nil {
+	  sc := bufio.NewScanner(bytes.NewReader(output))
+    if blkioStats, err = cgroups.GetBlkioStat(sc); err != nil {
+		  return err
+	  }
+	  stats.BlkioStats.SectorsRecursive = blkioStats
+	}
+
+	output, errExec = exec.Command("lxc-cgroup", "-n", c.ID, "blkio.io_service_bytes_recursive").CombinedOutput()
+	if errExec == nil {
+    sc := bufio.NewScanner(bytes.NewReader(output))
+	  if blkioStats, err = cgroups.GetBlkioStat(sc); err != nil {
+		  return err
+	  }
+	  stats.BlkioStats.IoServiceBytesRecursive = blkioStats
+	}
+
+	output, errExec = exec.Command("lxc-cgroup", "-n", c.ID, "blkio.io_serviced_recursive").CombinedOutput()
+	if errExec == nil {
+    sc := bufio.NewScanner(bytes.NewReader(output))
+	  if blkioStats, err = cgroups.GetBlkioStat(sc); err != nil {
+		  return err
+	  }
+	  stats.BlkioStats.IoServicedRecursive = blkioStats
+	}
+
+	output, errExec = exec.Command("lxc-cgroup", "-n", c.ID, "blkio.io_queued_recursive").CombinedOutput()
+	if errExec == nil {
+    sc := bufio.NewScanner(bytes.NewReader(output))
+	  if blkioStats, err = cgroups.GetBlkioStat(sc); err != nil {
+		  return err
+	  }
+	  stats.BlkioStats.IoQueuedRecursive = blkioStats
+	}
+
+  return nil
 }

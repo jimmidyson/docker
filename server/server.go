@@ -128,6 +128,7 @@ func InitServer(job *engine.Job) engine.Status {
 		"pause":            srv.ContainerPause,
 		"unpause":          srv.ContainerUnpause,
 		"wait":             srv.ContainerWait,
+		"stats":            srv.ContainerStats,
 		"tag":              srv.ImageTag, // FIXME merge with "image_tag"
 		"resize":           srv.ContainerResize,
 		"commit":           srv.ContainerCommit,
@@ -195,6 +196,32 @@ func (srv *Server) ContainerUnpause(job *engine.Job) engine.Status {
 	}
 	if err := container.Unpause(); err != nil {
 		return job.Errorf("Cannot unpause container %s: %s", name, err)
+	}
+	return engine.StatusOK
+}
+
+func (srv *Server) ContainerStats(job *engine.Job) engine.Status {
+	if n := len(job.Args); n < 1 || n > 2 {
+		return job.Errorf("Usage: %s CONTAINER", job.Name)
+	}
+	name := job.Args[0]
+	container := srv.daemon.Get(name)
+	if container == nil {
+		return job.Errorf("No such container: %s", name)
+	}
+	stats, err := container.Stats()
+  if err != nil {
+		return job.Errorf("Cannot get stats for container %s: %s", name, err)
+	}
+
+  out := &engine.Env{}
+	out.Set("Id", container.ID)
+  out.SetJson("Memory", stats.MemoryStats)
+  out.SetJson("CPU", stats.CpuStats)
+  out.SetJson("Blkio", stats.BlkioStats)
+  out.SetJson("Freezer", stats.FreezerStats)
+	if _, err := out.WriteTo(job.Stdout); err != nil {
+		return job.Error(err)
 	}
 	return engine.StatusOK
 }

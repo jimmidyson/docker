@@ -14,8 +14,8 @@ import (
 	"github.com/dotcloud/docker/daemon/execdriver"
 	"github.com/dotcloud/docker/pkg/apparmor"
 	"github.com/dotcloud/docker/pkg/libcontainer"
-	"github.com/dotcloud/docker/pkg/libcontainer/cgroups/fs"
-	"github.com/dotcloud/docker/pkg/libcontainer/cgroups/systemd"
+	"github.com/dotcloud/docker/pkg/libcontainer/cgroups"
+	"github.com/dotcloud/docker/pkg/libcontainer/cgroups/cgroupmanagers"
 	"github.com/dotcloud/docker/pkg/libcontainer/namespaces"
 	"github.com/dotcloud/docker/pkg/system"
 )
@@ -151,10 +151,7 @@ func (d *driver) Pause(c *execdriver.Command) error {
 		return fmt.Errorf("active container for %s does not exist", c.ID)
 	}
 	active.container.Cgroups.Freezer = "FROZEN"
-	if systemd.UseSystemd() {
-		return systemd.Freeze(active.container.Cgroups, active.container.Cgroups.Freezer)
-	}
-	return fs.Freeze(active.container.Cgroups, active.container.Cgroups.Freezer)
+	return cgroupmanagers.NewManager().Freeze(active.container.Cgroups, active.container.Cgroups.Freezer)
 }
 
 func (d *driver) Unpause(c *execdriver.Command) error {
@@ -163,10 +160,7 @@ func (d *driver) Unpause(c *execdriver.Command) error {
 		return fmt.Errorf("active container for %s does not exist", c.ID)
 	}
 	active.container.Cgroups.Freezer = "THAWED"
-	if systemd.UseSystemd() {
-		return systemd.Freeze(active.container.Cgroups, active.container.Cgroups.Freezer)
-	}
-	return fs.Freeze(active.container.Cgroups, active.container.Cgroups.Freezer)
+	return cgroupmanagers.NewManager().Freeze(active.container.Cgroups, active.container.Cgroups.Freezer)
 }
 
 func (d *driver) Terminate(p *execdriver.Command) error {
@@ -223,10 +217,7 @@ func (d *driver) GetPidsForContainer(id string) ([]int, error) {
 	}
 	c := active.container.Cgroups
 
-	if systemd.UseSystemd() {
-		return systemd.GetPids(c)
-	}
-	return fs.GetPids(c)
+	return cgroupmanagers.NewManager().GetPids(c)
 }
 
 func (d *driver) writeContainerFile(container *libcontainer.Container, id string) error {
@@ -272,4 +263,16 @@ func getTerminal(c *execdriver.Command, pipes *execdriver.Pipes) namespaces.Term
 	}
 	c.Terminal = term
 	return term
+}
+
+func (d *driver) Stats(c *execdriver.Command) (*cgroups.Stats, error) {
+	active := d.activeContainers[c.ID]
+	if active == nil {
+		return nil, fmt.Errorf("active container for %s does not exist", c.ID)
+	}
+  stats,err := cgroupmanagers.NewManager().GetStats(active.container.Cgroups)
+  if err != nil {
+    return nil, err
+  }
+  return stats, nil
 }

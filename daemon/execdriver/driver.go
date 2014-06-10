@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/dotcloud/docker/pkg/libcontainer/cgroups"
 	"github.com/dotcloud/docker/pkg/libcontainer/devices"
 )
 
@@ -89,6 +90,7 @@ type Driver interface {
 	Info(id string) Info                          // "temporary" hack (until we move state from core to plugins)
 	GetPidsForContainer(id string) ([]int, error) // Returns a list of pids for the given container.
 	Terminate(c *Command) error                   // kill it with fire
+	Stats(c *Command) (*cgroups.Stats, error)
 }
 
 // Network settings of the container

@@ -38,3 +38,10 @@ type Cgroup struct {
 type ActiveCgroup interface {
 	Cleanup() error
 }
+
+type CgroupManager interface {
+  Apply(c *Cgroup, pid int) (ActiveCgroup, error)
+  GetStats(c *Cgroup) (*Stats, error)
+  Freeze(c *Cgroup, state FreezerState) error
+  GetPids(c *Cgroup) ([]int, error)
+}

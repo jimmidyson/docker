@@ -23,6 +23,7 @@ import (
 	"github.com/dotcloud/docker/links"
 	"github.com/dotcloud/docker/nat"
 	"github.com/dotcloud/docker/pkg/label"
+	"github.com/dotcloud/docker/pkg/libcontainer/cgroups"
 	"github.com/dotcloud/docker/pkg/libcontainer/devices"
 	"github.com/dotcloud/docker/pkg/networkfs/etchosts"
 	"github.com/dotcloud/docker/pkg/networkfs/resolvconf"
@@ -531,6 +532,13 @@ func (container *Container) Unpause() error {
 		return fmt.Errorf("Container %s is not running", container.ID)
 	}
 	return container.daemon.Unpause(container)
+}
+
+func (container *Container) Stats() (*cgroups.Stats, error) {
+	if !container.State.IsRunning() && !container.State.IsPaused() {
+		return nil, fmt.Errorf("Container %s is not running or paused", container.ID)
+	}
+	return container.daemon.Stats(container)
 }
 
 func (container *Container) Kill() error {

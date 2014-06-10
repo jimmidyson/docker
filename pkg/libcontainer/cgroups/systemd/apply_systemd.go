@@ -3,6 +3,7 @@
 package systemd
 
 import (
+  "bufio"
 	"bytes"
 	"fmt"
 	"io/ioutil"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	systemd1 "github.com/coreos/go-systemd/dbus"
@@ -23,11 +25,17 @@ type systemdCgroup struct {
 	cleanupDirs []string
 }
 
+type manager struct {}
+
 var (
 	connLock              sync.Mutex
 	theConn               *systemd1.Conn
 	hasStartTransientUnit bool
 )
+
+func NewManager() *manager {
+  return &manager{}
+}
 
 func UseSystemd() bool {
 	if !systemd.SdBooted() {
@@ -74,7 +82,7 @@ type cgroupArg struct {
 	Value string
 }
 
-func Apply(c *cgroups.Cgroup, pid int) (cgroups.ActiveCgroup, error) {
+func (m *manager) Apply(c *cgroups.Cgroup, pid int) (cgroups.ActiveCgroup, error) {
 	var (
 		unitName   = getUnitName(c)
 		slice      = "system.slice"
@@ -316,7 +324,7 @@ func (c *systemdCgroup) Cleanup() error {
 }
 
 func joinFreezer(c *cgroups.Cgroup, pid int) (string, error) {
-	path, err := getFreezerPath(c)
+	path, err := getSubsystemPath(c, "freezer")
 	if err != nil {
 		return "", err
 	}
@@ -332,23 +340,28 @@ func joinFreezer(c *cgroups.Cgroup, pid int) (string, error) {
 	return path, nil
 }
 
-func getFreezerPath(c *cgroups.Cgroup) (string, error) {
-	mountpoint, err := cgroups.FindCgroupMountpoint("freezer")
+func getSubsystemPath(c *cgroups.Cgroup, subsystem string) (string, error) {
+	mountpoint, err := cgroups.FindCgroupMountpoint(subsystem)
 	if err != nil {
 		return "", err
 	}
 
-	initPath, err := cgroups.GetInitCgroupDir("freezer")
+	initPath, err := cgroups.GetInitCgroupDir(subsystem)
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(mountpoint, initPath, fmt.Sprintf("%s-%s", c.Parent, c.Name)), nil
+  slice := "system.slice"
+  if c.Slice != "" {
+    slice = c.Slice
+  }
+
+	return filepath.Join(mountpoint, initPath, slice, fmt.Sprintf("%s-%s.scope", c.Parent, c.Name)), nil
 
 }
 
-func Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
-	path, err := getFreezerPath(c)
+func (m *manager) Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
+	path, err := getSubsystemPath(c, "freezer")
 	if err != nil {
 		return err
 	}
@@ -369,7 +382,7 @@ func Freeze(c *cgroups.Cgroup, state cgroups.FreezerState) error {
 	return nil
 }
 
-func GetPids(c *cgroups.Cgroup) ([]int, error) {
+func (m *manager) GetPids(c *cgroups.Cgroup) ([]int, error) {
 	unitName := getUnitName(c)
 
 	mountpoint, err := cgroups.FindCgroupMountpoint("cpu")
@@ -388,4 +401,112 @@ func GetPids(c *cgroups.Cgroup) ([]int, error) {
 
 func getUnitName(c *cgroups.Cgroup) string {
 	return fmt.Sprintf("%s-%s.scope", c.Parent, c.Name)
+}
+
+func (m *manager) GetStats(c *cgroups.Cgroup) (*cgroups.Stats, error) {
+  var err error
+	stats := cgroups.NewStats()
+
+  err = getCpuStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getCpuAcctStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getMemoryStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getBlkioStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  err = getFreezerStats(c, stats)
+  if err != nil {
+    return nil, err
+  }
+
+  return stats, nil
+}
+
+func getCpuStats(c *cgroups.Cgroup, stats *cgroups.Stats) error {
+	path, err := getSubsystemPath(c, "cpu")
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(filepath.Join(path, "cpu.stat"))
+	if err != nil {
+		if pathErr, ok := err.(*os.PathError); ok && pathErr.Err == syscall.ENOENT {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+  if err := cgroups.GetCpuStats(sc, stats); err != nil {
+    return err
+  }
+
+  return nil
+}
+
+func getCpuAcctStats(c *cgroups.Cgroup, stats *cgroups.Stats) error {
+	path, err := getSubsystemPath(c, "cpuacct")
+	if err != nil {
+		return err
+	}
+
+  return cgroups.GetCpuUsageStats(path, stats)
+}
+
+func getMemoryStats(c *cgroups.Cgroup, stats *cgroups.Stats) error {
+	path, err := getSubsystemPath(c, "memory")
+	if err != nil {
+		return err
+	}
+
+  return cgroups.GetMemoryStats(path, stats)
+}
+
+func getBlkioStats(c *cgroups.Cgroup, stats *cgroups.Stats) error {
+	var blkioStats []cgroups.BlkioStatEntry
+	var err error
+	path, err := getSubsystemPath(c, "blkio")
+	if err != nil {
+		return err
+	}
+
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.sectors_recursive")); err == nil {
+	  stats.BlkioStats.SectorsRecursive = blkioStats
+	}
+
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.io_service_bytes_recursive")); err == nil {
+	  stats.BlkioStats.IoServiceBytesRecursive = blkioStats
+	}
+
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.io_serviced_recursive")); err == nil {
+	  stats.BlkioStats.IoServicedRecursive = blkioStats
+	}
+
+	if blkioStats, err = cgroups.GetBlkioStatFromFile(filepath.Join(path, "blkio.io_queued_recursive")); err == nil {
+	  stats.BlkioStats.IoQueuedRecursive = blkioStats
+	}
+
+	return nil
+}
+
+func getFreezerStats(c *cgroups.Cgroup, stats *cgroups.Stats) error {
+	path, err := getSubsystemPath(c, "freezer")
+	if err != nil {
+		return err
+	}
+
+	return cgroups.GetFreezerStats(path, stats)
 }

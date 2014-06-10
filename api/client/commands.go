@@ -76,6 +76,7 @@ func (cli *DockerCli) CmdHelp(args ...string) error {
 		{"save", "Save an image to a tar archive"},
 		{"search", "Search for an image in the docker index"},
 		{"start", "Start a stopped container"},
+		{"stats", "Return utilisation stats on container(s)"},
 		{"stop", "Stop a running container"},
 		{"tag", "Tag an image into a repository"},
 		{"top", "Lookup the running processes of a container"},
@@ -2231,4 +2232,39 @@ func (cli *DockerCli) CmdLoad(args ...string) error {
 		return err
 	}
 	return nil
+}
+
+func (cli *DockerCli) CmdStats(args ...string) error {
+	cmd := cli.Subcmd("stats", "CONTAINER", "Return utilisation stats from cgroups on container(s)")
+	if err := cmd.Parse(args); err != nil {
+		return nil
+	}
+	if cmd.NArg() != 1 {
+		cmd.Usage()
+		return nil
+	}
+
+	var encounteredError error
+	for _, name := range cmd.Args() {
+		obj, _, err := readBody(cli.call("GET", "/containers/"+name+"/stats", nil, false))
+		if err != nil {
+			if strings.Contains(err.Error(), "No such") {
+				fmt.Fprintf(cli.err, "Error: No such container: %s\n", name)
+			} else {
+			  fmt.Fprintf(cli.err, "%s\n", err)
+			  encounteredError = fmt.Errorf("Error: failed to get stats for container named %s", name)
+			}
+		} else {
+	    indented := new(bytes.Buffer)
+			if err = json.Indent(indented, obj, "", "    "); err != nil {
+				fmt.Fprintf(cli.err, "%s\n", err)
+			  encounteredError = fmt.Errorf("Error: failed to get stats for container named %s", name)
+      }
+		  if _, err := io.Copy(cli.out, indented); err != nil {
+			  fmt.Fprintf(cli.err, "%s\n", err)
+			  encounteredError = fmt.Errorf("Error: failed to get stats for container named %s", name)
+		  }
+		}
+	}
+	return encounteredError
 }
